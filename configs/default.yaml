@@ -1,0 +1,103 @@
+project_name: wave-anomaly-detection
+seed: 42
+
+data:
+  root_dir: data
+  cache_dir: outputs/cache
+  index_dir: outputs/index
+  prediction_dir: outputs/predictions
+  stats_path: outputs/cache/stats.json
+  processed_grid: oper
+  label_dir: labels_r30/oper
+  label_filename_template: "typhoon_r30_mask_oper_{year}.nc"
+  history_len: 8
+  pred_offset: 0
+  train_years: [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023]
+  test_years: [2024]
+  val_years: [2025]
+  cache_filename_template: "aligned_{year}.nc"
+  drop_unlabeled_split_samples: true
+  train_stats_splits: ["train"]
+
+features:
+  use_wind_speed: true
+  use_mwd_sincos: true
+  wave_interp_method: linear
+
+io:
+  time_candidates: ["valid_time", "time"]
+  latitude_candidates: ["latitude", "lat"]
+  longitude_candidates: ["longitude", "lon"]
+  wind_u_candidates:
+    [
+      "u10",
+      "U10",
+      "10u",
+      "eastward_wind",
+      "eastward_wind_at_10_metres",
+      "10m_u_component_of_wind"
+    ]
+  wind_v_candidates:
+    [
+      "v10",
+      "V10",
+      "10v",
+      "northward_wind",
+      "northward_wind_at_10_metres",
+      "10m_v_component_of_wind"
+    ]
+  wave_mwd_candidates:
+    [
+      "mwd",
+      "MWD",
+      "mean_wave_direction",
+      "mean_wave_direction_of_combined_wind_waves_and_swell"
+    ]
+  wave_mwp_candidates:
+    [
+      "mwp",
+      "MWP",
+      "mean_wave_period",
+      "mean_wave_period_based_on_first_moment"
+    ]
+  wave_swh_candidates:
+    [
+      "swh",
+      "SWH",
+      "significant_wave_height",
+      "significant_height_of_combined_wind_waves_and_swell"
+    ]
+  label_candidates: ["typhoon_affected", "label", "mask"]
+
+model:
+  base_channels: 32
+  depth: 3
+  fusion_type: concat
+  dropout: 0.1
+
+train:
+  batch_size: 1
+  epochs: 50
+  lr: 0.0003
+  weight_decay: 0.0001
+  num_workers: 0
+  amp: true
+  loss_type: bce_dice
+  pos_weight: 8.0
+  focal_alpha: 0.75
+  focal_gamma: 2.0
+  positive_sample_weight: 4.0
+  negative_sample_weight: 1.0
+  max_grad_norm: 1.0
+  device: auto
+  output_dir: outputs/train
+
+eval:
+  threshold: 0.5
+  threshold_start: 0.1
+  threshold_end: 0.9
+  threshold_step: 0.05
+  pr_auc_thresholds: 201
+  min_area: 4
+  connectivity: 8
+  report_dir: outputs/reports
