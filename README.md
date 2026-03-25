@@ -1,0 +1,276 @@
+# 风浪异常识别基线项目
+
+本项目面向西太平洋海区的风浪异常识别任务，使用风场、波浪场和 IBTrACS 台风轨迹数据，构建了一个从台风影响打标、数据预处理、样本索引构建、模型训练、推理到评估的完整流程。
+
+当前默认任务是二分类分割：
+- 输入：一段历史风场与波浪场序列
+- 输出：目标时刻每个网格点是否受台风影响
+- 默认标签：基于 IBTrACS `r30` 风圈生成的 `typhoon_affected`
+
+## 项目概览
+
+项目主要流程如下：
+1. 根据 IBTrACS 轨迹和 `r30` 风圈生成台风影响标签。
+2. 将原始月度 NetCDF 数据预处理为年度缓存文件。
+3. 构建训练、测试、验证所需的滑动时间窗索引。
+4. 训练双分支 ConvLSTM U-Net 模型。
+5. 对指定年份进行推理。
+6. 输出像素级和目标级评估指标。
+
+## 目录结构
+
+```text
+.
+|-- data/
+|   |-- YYYY/YYYYMM/
+|   |   |-- data_stream-oper_stepType-instant.nc
+|   |   `-- data_stream-wave_stepType-instant.nc
+|   `-- IBTrACS.WP.v04r01.nc
+|-- labels_r30/
+|-- outputs/
+|   |-- cache/
+|   |-- index/
+|   |-- predictions/
+|   |-- reports/
+|   `-- train/
+|-- scripts/
+|   `-- build_typhoon_r30_labels.py
+|-- src/wave_anomaly/
+|-- preprocess.py
+|-- build_index.py
+|-- train.py
+|-- predict.py
+|-- evaluate.py
+`-- configs/default.yaml
+```
+
+## 数据说明
+
+### 原始输入数据
+
+项目默认读取 `data/YYYY/YYYYMM/` 下的月度数据：
+- 风场文件：`data_stream-oper_stepType-instant.nc`
+- 波浪文件：`data_stream-wave_stepType-instant.nc`
+
+默认研究海区：
+- 纬度：`0-60N`
+- 经度：`100-180E`
+
+### IBTrACS 台风轨迹文件
+
+`data/IBTrACS.WP.v04r01.nc` 不是规则的经纬度网格，而是“台风列表 + 每条台风轨迹点”的结构。主要字段包括：
+- `storm`：台风编号索引
+- `date_time`：该台风沿时间展开的轨迹点索引
+- `lat/lon`：每个时刻的台风中心位置
+- `iso_time`：时间字符串
+- `tokyo_r30_long/tokyo_r30_short`
+- `kma_r30_long/kma_r30_short`
+
+标签脚本会根据“网格点到台风中心的距离是否小于等于 `r30`”来判断该网格点是否受台风影响。
+
+## 模型说明
+
+模型实现在 [model.py](d:/Competition/CSSOIE2026/Wave-Anomaly-Detection/src/wave_anomaly/model.py)。
+
+当前模型为双分支 `ConvLSTM U-Net`：
+- 风场分支编码历史风场特征
+- 波浪分支编码历史波浪特征
+- 每个尺度使用 ConvLSTM 建模时间信息
+- 两个分支的特征通过 `concat + 1x1 conv` 融合
+- 最终输出目标时刻的单通道概率图
+
+默认输入通道：
+- 风场：`u10`、`v10`、`ws`
+- 波浪：`mwd_sin`、`mwd_cos`、`mwp`、`swh`
+
+默认损失函数：
+- `BCEWithLogits + Dice`
+- 正样本权重：`pos_weight = 8.0`
+- 无效标签区域通过 `loss_mask` 屏蔽，不参与损失计算
+
+## 环境安装
+
+推荐 Python 版本：`3.10+`
+
+安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+如果本地已经有能读取 NetCDF 的 conda 环境，也可以直接使用。当前项目开发时使用过名为 `ocean-swinlstm` 的环境。
+
+## 完整使用流程
+
+### 1. 根据 IBTrACS 生成台风标签
+
+在 `oper` 网格上生成 2016-2024 年的年度标签：
+
+```bash
+python scripts/build_typhoon_r30_labels.py --start-year 2016 --end-year 2024 --grid oper --output-dir labels_r30
+```
+
+如果还需要 `wave` 网格版本：
+
+```bash
+python scripts/build_typhoon_r30_labels.py --start-year 2016 --end-year 2024 --grid wave --output-dir labels_r30
+```
+
+输出文件形式：
+- `labels_r30/oper/typhoon_r30_mask_oper_YYYY.nc`
+- `labels_r30/wave/typhoon_r30_mask_wave_YYYY.nc`
+
+仓库中也已经包含合并后的总文件：
+- [typhoon_r30_mask_oper_2016_2024.nc](d:/Competition/CSSOIE2026/Wave-Anomaly-Detection/labels_r30/oper/typhoon_r30_mask_oper_2016_2024.nc)
+- [typhoon_r30_mask_wave_2016_2024.nc](d:/Competition/CSSOIE2026/Wave-Anomaly-Detection/labels_r30/wave/typhoon_r30_mask_wave_2016_2024.nc)
+
+### 2. 预处理年度缓存
+
+```bash
+python preprocess.py --config configs/default.yaml
+```
+
+预处理阶段会执行以下操作：
+- 统一时间、经纬度和变量名
+- 裁剪到目标海区
+- 将波浪场插值到风场网格
+- 构造额外特征，如风速、波向正余弦
+- 填补缺失值
+- 将标签对齐到处理后的目标网格
+- 输出年度缓存到 `outputs/cache/aligned_YYYY.nc`
+- 统计训练集归一化参数并保存到 `outputs/cache/stats.json`
+
+### 3. 构建滑动时间窗索引
+
+```bash
+python build_index.py --config configs/default.yaml
+```
+
+输出：
+- `outputs/index/train_index.csv`
+- `outputs/index/test_index.csv`
+- `outputs/index/val_index.csv`
+- `outputs/index/all_index.csv`
+
+### 4. 训练模型
+
+```bash
+python train.py --config configs/default.yaml
+```
+
+训练阶段会输出：
+- `outputs/train/best.ckpt`
+- `outputs/train/last.ckpt`
+- `outputs/train/history.csv`
+- `outputs/train/test_threshold_scan.csv`
+- `outputs/train/summary.json`
+
+### 5. 按年份推理
+
+例如对 2024 年进行推理：
+
+```bash
+python predict.py --config configs/default.yaml --checkpoint outputs/train/best.ckpt --year 2024
+```
+
+输出：
+- `outputs/predictions/prediction_2024.nc`
+- `outputs/predictions/prediction_2024_summary.csv`
+
+### 6. 评估结果
+
+评估测试集：
+
+```bash
+python evaluate.py --config configs/default.yaml --split test
+```
+
+评估验证集：
+
+```bash
+python evaluate.py --config configs/default.yaml --split val
+```
+
+评估结果保存在 `outputs/reports/`，包括：
+- 各年份指标文件
+- 汇总指标文件
+- PR 曲线
+- 阈值扫描曲线
+
+## 默认配置
+
+默认配置文件为 [default.yaml](d:/Competition/CSSOIE2026/Wave-Anomaly-Detection/configs/default.yaml)。
+
+当前主要默认值：
+- 处理网格：`oper`
+- 标签目录：`labels_r30/oper`
+- 训练年份：`2016-2023`
+- 测试年份：`2024`
+- 验证年份：`2025`
+- 历史长度：`8`
+- 预测偏移：`0`
+- 批大小：`1`
+- 训练轮数：`50`
+- 学习率：`3e-4`
+- 损失类型：`bce_dice`
+
+如果本地没有 `2025` 数据，建议先修改 `val_years`，再运行完整流程。
+
+## 输出文件格式
+
+### 年度缓存文件
+
+`outputs/cache/aligned_YYYY.nc` 包含：
+- `wind(time, wind_channel, latitude, longitude)`
+- `wave(time, wave_channel, latitude, longitude)`
+- `label(time, latitude, longitude)`
+- `quality_mask(time, latitude, longitude)`
+
+### 推理结果文件
+
+`outputs/predictions/prediction_YYYY.nc` 包含：
+- `probability(time, latitude, longitude)`
+- `binary_prediction(time, latitude, longitude)`
+- `label(time, latitude, longitude)`
+
+## 评估指标
+
+像素级指标：
+- `precision`
+- `recall`
+- `f1`
+- `iou`
+- `dice`
+- `csi`
+- `pod`
+- `far`
+- `accuracy`
+- `pr_auc`
+
+目标级指标：
+- `object_csi`
+- `object_pod`
+- `object_far`
+
+目标级评估基于连通域分析，受以下参数控制：
+- `min_area`
+- `connectivity`
+
+## 测试
+
+运行测试：
+
+```bash
+pytest
+```
+
+当前包含的测试文件：
+- `tests/test_model.py`
+- `tests/test_metrics.py`
+- `tests/test_preprocessing.py`
+
+## 备注
+
+- 当前数据中的 IBTrACS `time` 字段可能带有异常纳秒偏移，打标时建议优先使用 `iso_time`。
+- 标签值 `-1` 表示该区域无有效标签，训练时会被 `loss_mask` 忽略。
+- 默认训练流程使用 `oper` 网格作为统一目标网格，波浪场会先插值到该分辨率上。
