@@ -100,6 +100,12 @@ pip install -r requirements.txt
 
 如果本地已经有能读取 NetCDF 的 conda 环境，也可以直接使用。当前项目开发时使用过名为 `ocean-swinlstm` 的环境。
 
+如果你希望把离线日志之后再同步到 Weights & Biases (`wandb`)，可以先登录：
+
+```bash
+wandb login
+```
+
 ## 完整使用流程
 
 ### 1. 根据 IBTrACS 生成台风标签
@@ -120,10 +126,6 @@ python scripts/build_typhoon_r30_labels.py --start-year 2016 --end-year 2024 --g
 - `labels_r30/oper/typhoon_r30_mask_oper_YYYY.nc`
 - `labels_r30/wave/typhoon_r30_mask_wave_YYYY.nc`
 
-仓库中也已经包含合并后的总文件：
-- [typhoon_r30_mask_oper_2016_2024.nc](d:/Competition/CSSOIE2026/Wave-Anomaly-Detection/labels_r30/oper/typhoon_r30_mask_oper_2016_2024.nc)
-- [typhoon_r30_mask_wave_2016_2024.nc](d:/Competition/CSSOIE2026/Wave-Anomaly-Detection/labels_r30/wave/typhoon_r30_mask_wave_2016_2024.nc)
-
 ### 2. 预处理年度缓存
 
 ```bash
@@ -137,8 +139,10 @@ python preprocess.py --config configs/default.yaml
 - 构造额外特征，如风速、波向正余弦
 - 填补缺失值
 - 将标签对齐到处理后的目标网格
-- 输出年度缓存到 `outputs/cache/aligned_YYYY.nc`
+- 输出训练缓存到 `outputs/cache/aligned_YYYY/`
 - 统计训练集归一化参数并保存到 `outputs/cache/stats.json`
+
+
 
 ### 3. 构建滑动时间窗索引
 
@@ -156,6 +160,18 @@ python build_index.py --config configs/default.yaml
 
 ```bash
 python train.py --config configs/default.yaml
+```
+
+当前默认配置已经开启 `wandb`，可以直接使用脚本启动训练：
+
+```bash
+bash scripts/train_wandb.sh
+```
+
+如果想指定其他配置文件：
+
+```bash
+bash scripts/train_wandb.sh configs/default.yaml
 ```
 
 训练阶段会输出：
@@ -214,17 +230,35 @@ python evaluate.py --config configs/default.yaml --split val
 - 学习率：`3e-4`
 - 损失类型：`bce_dice`
 
+`wandb` 相关默认值：
+- `wandb.enabled: true`
+- `wandb.project: wave-anomaly-detection`
+- `wandb.mode: offline`
+
+如果要自定义实验名，建议至少修改：
+
+```yaml
+wandb:
+  enabled: true
+  project: wave-anomaly-detection
+  run_name: exp001
+```
+
 如果本地没有 `2025` 数据，建议先修改 `val_years`，再运行完整流程。
 
 ## 输出文件格式
 
 ### 年度缓存文件
 
-`outputs/cache/aligned_YYYY.nc` 包含：
-- `wind(time, wind_channel, latitude, longitude)`
-- `wave(time, wave_channel, latitude, longitude)`
-- `label(time, latitude, longitude)`
-- `quality_mask(time, latitude, longitude)`
+`outputs/cache/aligned_YYYY/` 目录包含：
+- `wind.npy`
+- `wave.npy`
+- `label.npy`
+- `quality_mask.npy`
+- `time.npy`
+- `latitude.npy`
+- `longitude.npy`
+- `meta.json`
 
 ### 推理结果文件
 

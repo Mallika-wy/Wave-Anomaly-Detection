@@ -1,6 +1,18 @@
 project_name: wave-anomaly-detection
 seed: 42
 
+wandb:
+  enabled: true
+  project: wave-anomaly-detection
+  entity:
+  run_name:
+  mode: offline
+  tags: []
+  notes:
+  watch_model: false
+  watch_log: gradients
+  watch_log_freq: 100
+
 data:
   root_dir: data
   cache_dir: outputs/cache
@@ -10,12 +22,13 @@ data:
   processed_grid: oper
   label_dir: labels_r30/oper
   label_filename_template: "typhoon_r30_mask_oper_{year}.nc"
+  cache_write_time_chunk: 64
   history_len: 8
   pred_offset: 0
   train_years: [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023]
   test_years: [2024]
   val_years: [2025]
-  cache_filename_template: "aligned_{year}.nc"
+  cache_filename_template: "aligned_{year}"
   drop_unlabeled_split_samples: true
   train_stats_splits: ["train"]
 
@@ -76,19 +89,25 @@ model:
   dropout: 0.1
 
 train:
-  batch_size: 1
-  epochs: 50
+  batch_size: 20
+  epochs: 20
   lr: 0.0003
   weight_decay: 0.0001
-  num_workers: 0
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 2
   amp: true
   loss_type: bce_dice
   pos_weight: 8.0
   focal_alpha: 0.75
   focal_gamma: 2.0
-  positive_sample_weight: 4.0
+  positive_sample_weight: 8.0
   negative_sample_weight: 1.0
   max_grad_norm: 1.0
+  checkpoint_interval: 5
+  use_tqdm: true
+  log_interval: 50
+  eval_log_interval: 50
   device: auto
   output_dir: outputs/train
 

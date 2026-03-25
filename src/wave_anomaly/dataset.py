@@ -5,9 +5,9 @@ from typing import Any
 
 import numpy as np
 import torch
-import xarray as xr
 from torch.utils.data import Dataset, WeightedRandomSampler
 
+from .cache import TrainReadyCache
 from .utils import load_json, read_csv
 
 
@@ -22,15 +22,15 @@ class WaveAnomalyDataset(Dataset):
             raise ValueError("Either index_path or rows must be provided.")
         self.rows = rows if rows is not None else read_csv(index_path)  # type: ignore[arg-type]
         self.stats = load_json(stats_path) if stats_path is not None else None
-        self._datasets: dict[str, xr.Dataset] = {}
+        self._caches: dict[str, TrainReadyCache] = {}
 
     def __len__(self) -> int:
         return len(self.rows)
 
-    def _get_dataset(self, cache_path: str) -> xr.Dataset:
-        if cache_path not in self._datasets:
-            self._datasets[cache_path] = xr.open_dataset(cache_path)
-        return self._datasets[cache_path]
+    def _get_cache(self, cache_path: str) -> TrainReadyCache:
+        if cache_path not in self._caches:
+            self._caches[cache_path] = TrainReadyCache(Path(cache_path))
+        return self._caches[cache_path]
 
     def _normalize(self, arr: np.ndarray, branch: str) -> np.ndarray:
         if self.stats is None:
@@ -41,15 +41,15 @@ class WaveAnomalyDataset(Dataset):
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         row = self.rows[index]
-        ds = self._get_dataset(row["cache_path"])
+        cache = self._get_cache(row["cache_path"])
 
         start_idx = int(row["history_start_index"])
         end_idx = int(row["history_end_index"])
         target_idx = int(row["target_index"])
 
-        wind = ds["wind"].isel(time=slice(start_idx, end_idx + 1)).values.astype(np.float32)
-        wave = ds["wave"].isel(time=slice(start_idx, end_idx + 1)).values.astype(np.float32)
-        label = ds["label"].isel(time=target_idx).values.astype(np.float32)
+        wind = np.array(cache.wind[start_idx : end_idx + 1], dtype=np.float32, copy=True)
+        wave = np.array(cache.wave[start_idx : end_idx + 1], dtype=np.float32, copy=True)
+        label = np.array(cache.label[target_idx], dtype=np.float32, copy=True)
         loss_mask = (label >= 0).astype(np.float32)
         label = np.where(label < 0, 0.0, label)
 
@@ -72,9 +72,9 @@ class WaveAnomalyDataset(Dataset):
         )
 
     def close(self) -> None:
-        for ds in self._datasets.values():
-            ds.close()
-        self._datasets.clear()
+        for cache in self._caches.values():
+            cache.close()
+        self._caches.clear()
 
 
 def build_weighted_sampler(

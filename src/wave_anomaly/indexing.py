@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import xarray as xr
 
+from .cache import cache_path_for_year, open_cache
 from .config import load_config, resolve_path
 from .utils import save_json, seed_everything, write_csv
 
@@ -26,13 +26,6 @@ INDEX_FIELDS = [
     "has_positive",
     "valid_ratio",
 ]
-
-
-def cache_path_for_year(year: int, config: dict[str, Any]) -> Path:
-    cache_dir = resolve_path(config["data"]["cache_dir"])
-    return cache_dir / config["data"]["cache_filename_template"].format(year=year)
-
-
 def label_path_for_year(year: int, config: dict[str, Any]) -> Path:
     label_dir = resolve_path(config["data"]["label_dir"])
     return label_dir / config["data"]["label_filename_template"].format(year=year)
@@ -48,11 +41,12 @@ def build_rows_for_cache(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     drop_unlabeled = bool(config["data"].get("drop_unlabeled_split_samples", True))
-    with xr.open_dataset(cache_path) as ds:
-        times = ds["time"].values
-        labels = ds["label"].values
-        quality = ds["quality_mask"].values.astype(np.float32)
-        label_source = ds["label"].attrs.get("source_path", str(label_path_for_year(year, config)))
+    cache = open_cache(cache_path)
+    try:
+        times = cache.time
+        labels = cache.label
+        quality = np.asarray(cache.quality_mask, dtype=np.float32)
+        label_source = cache.meta.get("label_source") or str(label_path_for_year(year, config))
 
         for target_index in range(history_len - 1 + pred_offset, len(times)):
             history_end_index = target_index - pred_offset
@@ -79,6 +73,8 @@ def build_rows_for_cache(
                 "valid_ratio": f"{valid_ratio:.6f}",
             }
             rows.append(row)
+    finally:
+        cache.close()
     return rows
 
 

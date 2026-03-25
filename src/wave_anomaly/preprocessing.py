@@ -8,8 +8,9 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from .cache import cache_path_for_year, compute_stats, write_train_ready_cache
 from .config import load_config, resolve_path
-from .utils import ensure_dir, save_json, seed_everything
+from .utils import save_json, seed_everything
 
 
 DOMAIN = {
@@ -77,6 +78,7 @@ def _extract_variable(ds: xr.Dataset, candidates: list[str], kind: str) -> xr.Da
 
 
 def build_month_dataset(month_dir: Path, config: dict[str, Any]) -> xr.Dataset:
+    print(2)
     wind_path = month_dir / "data_stream-oper_stepType-instant.nc"
     wave_path = month_dir / "data_stream-wave_stepType-instant.nc"
     if not wind_path.exists() or not wave_path.exists():
@@ -181,65 +183,6 @@ def load_label_dataset(
     return label
 
 
-def save_year_cache(year: int, ds: xr.Dataset, config: dict[str, Any]) -> Path:
-    cache_dir = ensure_dir(resolve_path(config["data"]["cache_dir"]))
-    out_path = cache_dir / config["data"]["cache_filename_template"].format(year=year)
-    ds.attrs["year"] = year
-    ds.attrs["processed_grid"] = config["data"]["processed_grid"]
-    ds.attrs["history_len"] = config["data"]["history_len"]
-    encoding = {
-        "wind": {"zlib": True, "complevel": 4, "dtype": "float32"},
-        "wave": {"zlib": True, "complevel": 4, "dtype": "float32"},
-        "label": {"zlib": True, "complevel": 4, "dtype": "int8"},
-        "quality_mask": {"zlib": True, "complevel": 4, "dtype": "int8"},
-    }
-    ds.to_netcdf(out_path, encoding=encoding)
-    return out_path
-
-
-def compute_stats(cache_paths: list[Path]) -> dict[str, Any]:
-    accumulators = {
-        "wind": None,
-        "wave": None,
-    }
-    channel_names = {
-        "wind": [],
-        "wave": [],
-    }
-    for cache_path in cache_paths:
-        with xr.open_dataset(cache_path) as ds:
-            for key, channel_dim in (("wind", "wind_channel"), ("wave", "wave_channel")):
-                arr = ds[key].values.astype(np.float64)
-                if accumulators[key] is None:
-                    channel_count = arr.shape[1]
-                    accumulators[key] = {
-                        "sum": np.zeros(channel_count, dtype=np.float64),
-                        "sumsq": np.zeros(channel_count, dtype=np.float64),
-                        "count": np.zeros(channel_count, dtype=np.float64),
-                    }
-                    channel_names[key] = ds[channel_dim].values.tolist()
-                flat = np.moveaxis(arr, 1, 0).reshape(arr.shape[1], -1)
-                accumulators[key]["sum"] += flat.sum(axis=1)
-                accumulators[key]["sumsq"] += np.square(flat).sum(axis=1)
-                accumulators[key]["count"] += flat.shape[1]
-
-    stats: dict[str, Any] = {}
-    for key in ("wind", "wave"):
-        if accumulators[key] is None:
-            raise RuntimeError(f"No cache files available to compute {key} statistics.")
-        sums = accumulators[key]["sum"]
-        sumsq = accumulators[key]["sumsq"]
-        counts = np.maximum(accumulators[key]["count"], 1.0)
-        means = sums / counts
-        variances = np.maximum((sumsq / counts) - np.square(means), 1.0e-8)
-        stats[key] = {
-            "channel_names": channel_names[key],
-            "mean": means.tolist(),
-            "std": np.sqrt(variances).tolist(),
-        }
-    return stats
-
-
 def iter_year_months(data_root: Path, year: int) -> list[Path]:
     year_dir = data_root / str(year)
     if not year_dir.exists():
@@ -248,6 +191,7 @@ def iter_year_months(data_root: Path, year: int) -> list[Path]:
 
 
 def preprocess_year(year: int, config: dict[str, Any]) -> Path:
+    print(1)
     data_root = resolve_path(config["data"]["root_dir"])
     month_dirs = iter_year_months(data_root, year)
     if not month_dirs:
@@ -264,7 +208,7 @@ def preprocess_year(year: int, config: dict[str, Any]) -> Path:
             config,
         )
     )
-    return save_year_cache(year, year_ds, config)
+    return write_train_ready_cache(cache_path_for_year(year, config), year_ds, year, config)
 
 
 def parse_args() -> argparse.Namespace:

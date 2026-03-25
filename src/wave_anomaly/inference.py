@@ -7,7 +7,8 @@ import numpy as np
 import torch
 import xarray as xr
 
-from .indexing import build_rows_for_cache, cache_path_for_year
+from .cache import cache_path_for_year, open_cache
+from .indexing import build_rows_for_cache
 from .model import build_model
 from .utils import ensure_dir
 
@@ -85,13 +86,16 @@ def predict_year(
     cache_path: Path,
     output_dir: str | Path,
 ) -> tuple[Path, list[dict[str, Any]]]:
-    with xr.open_dataset(cache_path) as cache_ds:
-        times = cache_ds["time"].values
-        latitude = cache_ds["latitude"].values
-        longitude = cache_ds["longitude"].values
-        labels = cache_ds["label"].values.astype(np.int8)
+    cache = open_cache(cache_path)
+    try:
+        times = np.asarray(cache.time)
+        latitude = np.asarray(cache.latitude)
+        longitude = np.asarray(cache.longitude)
+        labels = np.asarray(cache.label, dtype=np.int8)
         probabilities = np.full(labels.shape, np.nan, dtype=np.float32)
         binaries = np.full(labels.shape, -1, dtype=np.int8)
+    finally:
+        cache.close()
 
     summary_rows: list[dict[str, Any]] = []
     for idx in range(len(dataset)):
