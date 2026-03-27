@@ -78,7 +78,6 @@ def _extract_variable(ds: xr.Dataset, candidates: list[str], kind: str) -> xr.Da
 
 
 def build_month_dataset(month_dir: Path, config: dict[str, Any]) -> xr.Dataset:
-    print(2)
     wind_path = month_dir / "data_stream-oper_stepType-instant.nc"
     wave_path = month_dir / "data_stream-wave_stepType-instant.nc"
     if not wind_path.exists() or not wave_path.exists():
@@ -154,18 +153,25 @@ def load_label_dataset(
     latitude: xr.DataArray,
     longitude: xr.DataArray,
     config: dict[str, Any],
-) -> xr.DataArray:
+) -> tuple[xr.DataArray, xr.DataArray]:
     label_dir = resolve_path(config["data"]["label_dir"])
     label_path = label_dir / config["data"]["label_filename_template"].format(year=year)
     if not label_path.exists():
         warnings.warn(f"Label file missing for {year}: {label_path}")
         shape = (time_coord.size, latitude.size, longitude.size)
-        return xr.DataArray(
+        hard = xr.DataArray(
             np.full(shape, -1, dtype=np.int8),
             coords={"time": time_coord, "latitude": latitude, "longitude": longitude},
             dims=("time", "latitude", "longitude"),
             name="label",
         )
+        soft = xr.DataArray(
+            np.full(shape, -1.0, dtype=np.float32),
+            coords={"time": time_coord, "latitude": latitude, "longitude": longitude},
+            dims=("time", "latitude", "longitude"),
+            name="label_soft",
+        )
+        return hard, soft
 
     with xr.open_dataset(label_path) as label_ds_raw:
         label_ds = canonicalize_dataset(label_ds_raw, config)
@@ -176,11 +182,32 @@ def load_label_dataset(
             longitude=longitude,
             method="nearest",
         )
+        soft_label_name = None
+        soft_candidates = list(config["io"].get("soft_label_candidates", []))
+        if soft_candidates:
+            try:
+                soft_label_name = pick_name(label_ds, soft_candidates, "soft label variable")
+            except KeyError:
+                soft_label_name = None
+        if soft_label_name is not None:
+            soft_label = sanitize_array(label_ds[soft_label_name]).interp(
+                time=time_coord,
+                latitude=latitude,
+                longitude=longitude,
+                method="nearest",
+            )
+        else:
+            soft_label = label.astype(np.float32)
+
     label = xr.where(np.isfinite(label), label, -1)
-    label = xr.where(label > 0.5, 1, xr.where(label < 0, -1, 0)).astype(np.int8)
-    label.name = "label"
-    label.attrs["source_path"] = str(label_path)
-    return label
+    hard_label = xr.where(label > 0.5, 1, xr.where(label < 0, -1, 0)).astype(np.int8)
+    soft_label = xr.where(np.isfinite(soft_label), soft_label, -1.0)
+    soft_label = xr.where(soft_label < 0, -1.0, np.clip(soft_label, 0.0, 1.0)).astype(np.float32)
+    hard_label.name = "label"
+    soft_label.name = "label_soft"
+    hard_label.attrs["source_path"] = str(label_path)
+    soft_label.attrs["source_path"] = str(label_path)
+    return hard_label, soft_label
 
 
 def iter_year_months(data_root: Path, year: int) -> list[Path]:
@@ -191,7 +218,6 @@ def iter_year_months(data_root: Path, year: int) -> list[Path]:
 
 
 def preprocess_year(year: int, config: dict[str, Any]) -> Path:
-    print(1)
     data_root = resolve_path(config["data"]["root_dir"])
     month_dirs = iter_year_months(data_root, year)
     if not month_dirs:
@@ -199,15 +225,14 @@ def preprocess_year(year: int, config: dict[str, Any]) -> Path:
 
     monthly = [build_month_dataset(month_dir, config) for month_dir in month_dirs]
     year_ds = xr.concat(monthly, dim="time").sortby("time")
-    year_ds = year_ds.assign(
-        label=load_label_dataset(
-            year,
-            year_ds["time"],
-            year_ds["latitude"],
-            year_ds["longitude"],
-            config,
-        )
+    hard_label, soft_label = load_label_dataset(
+        year,
+        year_ds["time"],
+        year_ds["latitude"],
+        year_ds["longitude"],
+        config,
     )
+    year_ds = year_ds.assign(label=hard_label, label_soft=soft_label)
     return write_train_ready_cache(cache_path_for_year(year, config), year_ds, year, config)
 
 

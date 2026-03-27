@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import csv
 
+from torch.utils.data import DataLoader
+
 from .config import load_config, resolve_path
 from .dataset import WaveAnomalyDataset
 from .inference import inference_rows_for_year, load_model_from_checkpoint, predict_year, select_device
@@ -30,16 +32,39 @@ def main() -> None:
         threshold = float(config["eval"]["threshold"])
 
     cache_path, rows = inference_rows_for_year(args.year, config)
-    dataset = WaveAnomalyDataset(rows=rows, stats_path=stats_path)
+    dataset = WaveAnomalyDataset(
+        rows=rows,
+        stats_path=stats_path,
+        target_label_mode=str(config["train"].get("target_label_mode", "soft")),
+    )
+    predict_config = config.get("predict", {})
+    predict_batch_size = int(predict_config.get("batch_size", config["train"].get("batch_size", 1)))
+    predict_num_workers = int(predict_config.get("num_workers", config["train"].get("num_workers", 0)))
+    loader_kwargs = {
+        "dataset": dataset,
+        "batch_size": predict_batch_size,
+        "shuffle": False,
+        "num_workers": predict_num_workers,
+        "pin_memory": True,
+    }
+    if predict_num_workers > 0:
+        loader_kwargs["persistent_workers"] = bool(
+            predict_config.get("persistent_workers", config["train"].get("persistent_workers", True))
+        )
+        loader_kwargs["prefetch_factor"] = int(
+            predict_config.get("prefetch_factor", config["train"].get("prefetch_factor", 2))
+        )
+    loader = DataLoader(**loader_kwargs)
     pred_dir = ensure_dir(resolve_path(config["data"]["prediction_dir"]))
     out_path, summary_rows = predict_year(
         year=args.year,
-        dataset=dataset,
+        loader=loader,
         model=model,
         device=device,
         threshold=float(threshold),
         cache_path=cache_path,
         output_dir=pred_dir,
+        use_tqdm=bool(predict_config.get("use_tqdm", True)),
     )
 
     summary_path = pred_dir / f"prediction_{args.year}_summary.csv"

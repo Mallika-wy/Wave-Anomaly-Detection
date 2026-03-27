@@ -16,6 +16,7 @@ ARRAY_FILENAMES = {
     "wind": "wind.npy",
     "wave": "wave.npy",
     "label": "label.npy",
+    "label_soft": "label_soft.npy",
     "quality_mask": "quality_mask.npy",
     "time": "time.npy",
     "latitude": "latitude.npy",
@@ -62,6 +63,13 @@ class TrainReadyCache:
     @property
     def quality_mask(self) -> np.ndarray:
         return self._load_array("quality_mask")
+
+    @property
+    def label_soft(self) -> np.ndarray:
+        path = self._array_path("label_soft")
+        if not path.exists():
+            return self.label
+        return self._load_array("label_soft")
 
     @property
     def time(self) -> np.ndarray:
@@ -112,6 +120,8 @@ def write_train_ready_cache(
     _write_numpy_array(out_path / ARRAY_FILENAMES["wind"], ds["wind"], time_chunk_size)
     _write_numpy_array(out_path / ARRAY_FILENAMES["wave"], ds["wave"], time_chunk_size)
     _write_numpy_array(out_path / ARRAY_FILENAMES["label"], ds["label"], time_chunk_size)
+    if "label_soft" in ds:
+        _write_numpy_array(out_path / ARRAY_FILENAMES["label_soft"], ds["label_soft"], time_chunk_size)
     _write_numpy_array(out_path / ARRAY_FILENAMES["quality_mask"], ds["quality_mask"], time_chunk_size)
     np.save(out_path / ARRAY_FILENAMES["time"], np.asarray(ds["time"].values), allow_pickle=False)
     np.save(out_path / ARRAY_FILENAMES["latitude"], np.asarray(ds["latitude"].values), allow_pickle=False)
@@ -129,6 +139,7 @@ def write_train_ready_cache(
             "wind": [int(size) for size in ds["wind"].shape],
             "wave": [int(size) for size in ds["wave"].shape],
             "label": [int(size) for size in ds["label"].shape],
+            "label_soft": [int(size) for size in ds["label_soft"].shape] if "label_soft" in ds else None,
             "quality_mask": [int(size) for size in ds["quality_mask"].shape],
         },
     }

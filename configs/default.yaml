@@ -20,8 +20,8 @@ data:
   prediction_dir: outputs/predictions
   stats_path: outputs/cache/stats.json
   processed_grid: oper
-  label_dir: labels_r30/oper
-  label_filename_template: "typhoon_r30_mask_oper_{year}.nc"
+  label_dir: labels_r34/oper
+  label_filename_template: "typhoon_r34_mask_oper_{year}.nc"
   cache_write_time_chunk: 64
   history_len: 8
   pred_offset: 0
@@ -81,6 +81,7 @@ io:
       "significant_height_of_combined_wind_waves_and_swell"
     ]
   label_candidates: ["typhoon_affected", "label", "mask"]
+  soft_label_candidates: ["typhoon_affected_soft", "label_soft", "mask_soft"]
 
 model:
   base_channels: 32
@@ -99,8 +100,11 @@ train:
   amp: true
   loss_type: bce_dice
   pos_weight: 8.0
+  bce_weight: 1.0
   focal_alpha: 0.75
   focal_gamma: 2.0
+  focal_weight: 0.4
+  dice_weight: 1.0
   positive_sample_weight: 8.0
   negative_sample_weight: 1.0
   max_grad_norm: 1.0
@@ -108,15 +112,28 @@ train:
   use_tqdm: true
   log_interval: 50
   eval_log_interval: 50
+  target_label_mode: soft
   device: auto
   output_dir: outputs/train
+
+label:
+  soft_boundary_value: 0.5
+  soft_min_value: 0.01
+
+predict:
+  batch_size: 8
+  num_workers: 2
+  persistent_workers: true
+  prefetch_factor: 2
+  use_tqdm: true
 
 eval:
   threshold: 0.5
   threshold_start: 0.1
   threshold_end: 0.9
   threshold_step: 0.05
-  pr_auc_thresholds: 201
+  pr_auc_thresholds: 51
+  use_tqdm: true
   min_area: 4
   connectivity: 8
   report_dir: outputs/reports

@@ -6,6 +6,8 @@ from typing import Any
 import numpy as np
 import torch
 import xarray as xr
+from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from .cache import cache_path_for_year, open_cache
 from .indexing import build_rows_for_cache
@@ -79,12 +81,13 @@ def inference_rows_for_year(year: int, config: dict[str, Any]) -> tuple[Path, li
 
 def predict_year(
     year: int,
-    dataset,
+    loader: DataLoader,
     model: torch.nn.Module,
     device: torch.device,
     threshold: float,
     cache_path: Path,
     output_dir: str | Path,
+    use_tqdm: bool = True,
 ) -> tuple[Path, list[dict[str, Any]]]:
     cache = open_cache(cache_path)
     try:
@@ -98,29 +101,39 @@ def predict_year(
         cache.close()
 
     summary_rows: list[dict[str, Any]] = []
-    for idx in range(len(dataset)):
-        x_wind, x_wave, y, meta = dataset[idx]
-        target_index = int(dataset.rows[idx]["target_index"])
+    progress = tqdm(
+        loader,
+        total=len(loader),
+        desc=f"predict {year}",
+        dynamic_ncols=True,
+        leave=False,
+        disable=not use_tqdm,
+    )
+    for x_wind, x_wave, y, meta in progress:
         with torch.no_grad():
             prob = model(
-                x_wind.unsqueeze(0).to(device),
-                x_wave.unsqueeze(0).to(device),
+                x_wind.to(device, non_blocking=True),
+                x_wave.to(device, non_blocking=True),
                 return_logits=False,
-            ).squeeze(0).squeeze(0).cpu().numpy()
+            ).squeeze(1).cpu().numpy()
         binary = (prob >= threshold).astype(np.int8)
-        probabilities[target_index] = prob
-        binaries[target_index] = binary
-        summary_rows.append(
-            {
-                "sample_id": meta["sample_id"],
-                "year": meta["year"],
-                "target_time": meta["target_time"],
-                "max_prob": float(np.nanmax(prob)),
-                "mean_prob": float(np.nanmean(prob)),
-                "predicted_area": int(binary.sum()),
-                "label_area": int(y.numpy().sum()),
-            }
-        )
+        target_indices = meta["target_index"].cpu().numpy().astype(np.int64)
+        probabilities[target_indices] = prob
+        binaries[target_indices] = binary
+        for sample_idx, target_index in enumerate(target_indices):
+            metric_label = meta["metric_label"][sample_idx].numpy()
+            summary_rows.append(
+                {
+                    "sample_id": meta["sample_id"][sample_idx],
+                    "year": int(meta["year"][sample_idx]),
+                    "target_time": meta["target_time"][sample_idx],
+                    "max_prob": float(np.nanmax(prob[sample_idx])),
+                    "mean_prob": float(np.nanmean(prob[sample_idx])),
+                    "predicted_area": int(binary[sample_idx].sum()),
+                    "label_area": int(metric_label.sum()),
+                }
+            )
+    progress.close()
 
     ds = xr.Dataset(
         {
@@ -132,6 +145,7 @@ def predict_year(
         attrs={"year": year, "threshold": threshold},
     )
     out_path = build_prediction_output_path(output_dir, year)
+    print(f"[predict] writing NetCDF -> {out_path}", flush=True)
     encoding = {
         "probability": {"zlib": True, "complevel": 4, "dtype": "float32"},
         "binary_prediction": {"zlib": True, "complevel": 4, "dtype": "int8"},

@@ -42,8 +42,9 @@ def build_loader(
     negative_sample_weight: float | None = None,
     persistent_workers: bool = False,
     prefetch_factor: int | None = None,
+    target_label_mode: str = "soft",
 ) -> tuple[WaveAnomalyDataset, DataLoader]:
-    dataset = WaveAnomalyDataset(index_path=index_path, stats_path=stats_path)
+    dataset = WaveAnomalyDataset(index_path=index_path, stats_path=stats_path, target_label_mode=target_label_mode)
     sampler = None
     if positive_sample_weight is not None and negative_sample_weight is not None and shuffle:
         sampler = build_weighted_sampler(dataset.rows, positive_sample_weight, negative_sample_weight)
@@ -152,10 +153,11 @@ def evaluate_loader(
             x_wave = x_wave.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             loss_mask = meta["loss_mask"].to(device, non_blocking=True)
+            metric_label = meta["metric_label"].cpu().numpy()
             logits = model(x_wind, x_wave, return_logits=True)
             loss = criterion(logits, y, loss_mask)
             prob = torch.sigmoid(logits)
-            metrics.update(y.cpu().numpy(), prob.cpu().numpy(), loss_mask.cpu().numpy())
+            metrics.update(metric_label, prob.cpu().numpy(), loss_mask.cpu().numpy())
             losses.append(float(loss.detach().cpu().item()))
             if log_interval > 0 and (step == 1 or step % log_interval == 0 or step == total_steps):
                 elapsed = time.time() - start_time
@@ -255,7 +257,7 @@ def scan_thresholds(
             x_wind = x_wind.to(device, non_blocking=True)
             x_wave = x_wave.to(device, non_blocking=True)
             prob = model(x_wind, x_wave, return_logits=False).cpu().numpy()
-            y_np = y.numpy()
+            y_np = meta["metric_label"].numpy()
             mask_np = meta["loss_mask"].numpy()
             metric_acc.update(y_np, prob, mask_np)
     best = metric_acc.best_threshold(key="f1")
@@ -268,7 +270,7 @@ def scan_thresholds(
             for sample_idx in range(prob.shape[0]):
                 object_rows.append(
                     object_metrics(
-                        y_true=y[sample_idx, 0].numpy(),
+                        y_true=meta["metric_label"][sample_idx, 0].numpy(),
                         y_prob=prob[sample_idx, 0],
                         threshold=float(best["threshold"]),
                         connectivity=int(config["eval"]["connectivity"]),
@@ -307,6 +309,7 @@ def main() -> None:
     log_interval = max(1, int(config["train"].get("log_interval", 100)))
     eval_log_interval = max(1, int(config["train"].get("eval_log_interval", 100)))
     use_tqdm = bool(config["train"].get("use_tqdm", True))
+    target_label_mode = str(config["train"].get("target_label_mode", "soft"))
 
     train_dataset, train_loader = build_loader(
         train_index,
@@ -318,6 +321,7 @@ def main() -> None:
         negative_sample_weight=float(config["train"].get("negative_sample_weight", 1.0)),
         persistent_workers=persistent_workers,
         prefetch_factor=prefetch_factor,
+        target_label_mode=target_label_mode,
     )
     test_dataset, test_loader = build_loader(
         test_index,
@@ -327,6 +331,7 @@ def main() -> None:
         shuffle=False,
         persistent_workers=persistent_workers,
         prefetch_factor=prefetch_factor,
+        target_label_mode=target_label_mode,
     )
     val_dataset = None
     val_loader = None
@@ -339,6 +344,7 @@ def main() -> None:
             shuffle=False,
             persistent_workers=persistent_workers,
             prefetch_factor=prefetch_factor,
+            target_label_mode=target_label_mode,
         )
 
     model = build_model(config).to(device)

@@ -5,12 +5,14 @@
 当前默认任务是二分类分割：
 - 输入：一段历史风场与波浪场序列
 - 输出：目标时刻每个网格点是否受台风影响
-- 默认标签：基于 IBTrACS `r30` 风圈生成的 `typhoon_affected`
+- 默认标签：基于 IBTrACS `usa_r34` 风圈生成
+- 训练用标签：`typhoon_affected_soft`
+- 评估用标签：`typhoon_affected`
 
 ## 项目概览
 
 项目主要流程如下：
-1. 根据 IBTrACS 轨迹和 `r30` 风圈生成台风影响标签。
+1. 根据 IBTrACS 轨迹和 `usa_r34` 风圈生成台风影响标签。
 2. 将原始月度 NetCDF 数据预处理为年度缓存文件。
 3. 构建训练、测试、验证所需的滑动时间窗索引。
 4. 训练双分支 ConvLSTM U-Net 模型。
@@ -26,7 +28,7 @@
 |   |   |-- data_stream-oper_stepType-instant.nc
 |   |   `-- data_stream-wave_stepType-instant.nc
 |   `-- IBTrACS.WP.v04r01.nc
-|-- labels_r30/
+|-- labels_r34/
 |-- outputs/
 |   |-- cache/
 |   |-- index/
@@ -34,7 +36,7 @@
 |   |-- reports/
 |   `-- train/
 |-- scripts/
-|   `-- build_typhoon_r30_labels.py
+|   `-- build_typhoon_r34_labels.py
 |-- src/wave_anomaly/
 |-- preprocess.py
 |-- build_index.py
@@ -63,10 +65,13 @@
 - `date_time`：该台风沿时间展开的轨迹点索引
 - `lat/lon`：每个时刻的台风中心位置
 - `iso_time`：时间字符串
-- `tokyo_r30_long/tokyo_r30_short`
-- `kma_r30_long/kma_r30_short`
+- `usa_r34`
+- `usa_roci`
+- `usa_rmw`
 
-标签脚本会根据“网格点到台风中心的距离是否小于等于 `r30`”来判断该网格点是否受台风影响。
+标签脚本默认使用 `usa_r34` 四象限风圈，并同时生成：
+- 二值标签：按象限半径判断网格点是否受台风影响
+- 软标签：按高斯形式 `exp(-d^2 / (2 sigma^2))` 生成，默认让 `r34` 边界对应软标签值 `0.5`
 
 ## 模型说明
 
@@ -86,7 +91,9 @@
 默认损失函数：
 - `BCEWithLogits + Dice`
 - 正样本权重：`pos_weight = 8.0`
+- 默认损失权重：`bce_weight = 1.0`，`dice_weight = 1.0`
 - 无效标签区域通过 `loss_mask` 屏蔽，不参与损失计算
+- 训练默认使用软标签，评估和最终汇报仍使用二值标签
 
 ## 环境安装
 
@@ -113,18 +120,18 @@ wandb login
 在 `oper` 网格上生成 2016-2024 年的年度标签：
 
 ```bash
-python scripts/build_typhoon_r30_labels.py --start-year 2016 --end-year 2024 --grid oper --output-dir labels_r30
+python scripts/build_typhoon_r34_labels.py --start-year 2016 --end-year 2025 --grid oper --output-dir labels_r34
 ```
 
 如果还需要 `wave` 网格版本：
 
 ```bash
-python scripts/build_typhoon_r30_labels.py --start-year 2016 --end-year 2024 --grid wave --output-dir labels_r30
+python scripts/build_typhoon_r34_labels.py --start-year 2016 --end-year 2025 --grid wave --output-dir labels_r34
 ```
 
 输出文件形式：
-- `labels_r30/oper/typhoon_r30_mask_oper_YYYY.nc`
-- `labels_r30/wave/typhoon_r30_mask_wave_YYYY.nc`
+- `labels_r34/oper/typhoon_r34_mask_oper_YYYY.nc`
+- `labels_r34/wave/typhoon_r34_mask_wave_YYYY.nc`
 
 ### 2. 预处理年度缓存
 
@@ -219,7 +226,7 @@ python evaluate.py --config configs/default.yaml --split val
 
 当前主要默认值：
 - 处理网格：`oper`
-- 标签目录：`labels_r30/oper`
+- 标签目录：`labels_r34/oper`
 - 训练年份：`2016-2023`
 - 测试年份：`2024`
 - 验证年份：`2025`

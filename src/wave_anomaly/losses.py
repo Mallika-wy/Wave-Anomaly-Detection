@@ -22,9 +22,11 @@ def dice_loss_from_logits(logits: torch.Tensor, targets: torch.Tensor, mask: tor
 
 
 class WeightedBCEDiceLoss(nn.Module):
-    def __init__(self, pos_weight: float) -> None:
+    def __init__(self, pos_weight: float, bce_weight: float = 1.0, dice_weight: float = 1.0) -> None:
         super().__init__()
         self.register_buffer("pos_weight", torch.tensor([pos_weight], dtype=torch.float32))
+        self.bce_weight = float(bce_weight)
+        self.dice_weight = float(dice_weight)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         bce = F.binary_cross_entropy_with_logits(
@@ -33,7 +35,9 @@ class WeightedBCEDiceLoss(nn.Module):
             reduction="none",
             pos_weight=self.pos_weight.to(logits.device),
         )
-        return masked_mean(bce, mask) + dice_loss_from_logits(logits, targets, mask)
+        bce_term = masked_mean(bce, mask)
+        dice_term = dice_loss_from_logits(logits, targets, mask)
+        return (self.bce_weight * bce_term) + (self.dice_weight * dice_term)
 
 
 class FocalLoss(nn.Module):
@@ -50,13 +54,43 @@ class FocalLoss(nn.Module):
         return masked_mean(loss, mask)
 
 
+class FocalDiceLoss(nn.Module):
+    def __init__(
+        self,
+        alpha: float = 0.75,
+        gamma: float = 2.0,
+        focal_weight: float = 0.4,
+        dice_weight: float = 0.6,
+    ) -> None:
+        super().__init__()
+        self.focal = FocalLoss(alpha=alpha, gamma=gamma)
+        self.focal_weight = float(focal_weight)
+        self.dice_weight = float(dice_weight)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        focal_term = self.focal(logits, targets, mask)
+        dice_term = dice_loss_from_logits(logits, targets, mask)
+        return (self.focal_weight * focal_term) + (self.dice_weight * dice_term)
+
+
 def build_loss(config: dict[str, Any]) -> nn.Module:
     loss_type = str(config["train"]["loss_type"]).lower()
     if loss_type == "bce_dice":
-        return WeightedBCEDiceLoss(pos_weight=float(config["train"]["pos_weight"]))
+        return WeightedBCEDiceLoss(
+            pos_weight=float(config["train"]["pos_weight"]),
+            bce_weight=float(config["train"].get("bce_weight", 1.0)),
+            dice_weight=float(config["train"].get("dice_weight", 1.0)),
+        )
     if loss_type == "focal":
         return FocalLoss(
             alpha=float(config["train"].get("focal_alpha", 0.75)),
             gamma=float(config["train"].get("focal_gamma", 2.0)),
+        )
+    if loss_type == "focal_dice":
+        return FocalDiceLoss(
+            alpha=float(config["train"].get("focal_alpha", 0.75)),
+            gamma=float(config["train"].get("focal_gamma", 2.0)),
+            focal_weight=float(config["train"].get("focal_weight", 0.4)),
+            dice_weight=float(config["train"].get("dice_weight", 0.6)),
         )
     raise ValueError(f"Unsupported loss_type: {loss_type}")

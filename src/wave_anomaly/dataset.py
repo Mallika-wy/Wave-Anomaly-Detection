@@ -17,12 +17,14 @@ class WaveAnomalyDataset(Dataset):
         index_path: str | Path | None = None,
         rows: list[dict[str, Any]] | None = None,
         stats_path: str | Path | None = None,
+        target_label_mode: str = "soft",
     ) -> None:
         if rows is None and index_path is None:
             raise ValueError("Either index_path or rows must be provided.")
         self.rows = rows if rows is not None else read_csv(index_path)  # type: ignore[arg-type]
         self.stats = load_json(stats_path) if stats_path is not None else None
         self._caches: dict[str, TrainReadyCache] = {}
+        self.target_label_mode = target_label_mode
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -49,9 +51,12 @@ class WaveAnomalyDataset(Dataset):
 
         wind = np.array(cache.wind[start_idx : end_idx + 1], dtype=np.float32, copy=True)
         wave = np.array(cache.wave[start_idx : end_idx + 1], dtype=np.float32, copy=True)
-        label = np.array(cache.label[target_idx], dtype=np.float32, copy=True)
+        metric_label = np.array(cache.label[target_idx], dtype=np.float32, copy=True)
+        train_label_source = cache.label_soft if self.target_label_mode == "soft" else cache.label
+        label = np.array(train_label_source[target_idx], dtype=np.float32, copy=True)
         loss_mask = (label >= 0).astype(np.float32)
         label = np.where(label < 0, 0.0, label)
+        metric_label = np.where(metric_label < 0, 0.0, metric_label)
 
         wind = self._normalize(wind, "wind")
         wave = self._normalize(wave, "wave")
@@ -61,7 +66,9 @@ class WaveAnomalyDataset(Dataset):
             "split": row["split"],
             "year": int(row["year"]),
             "target_time": row["target_time"],
+            "target_index": target_idx,
             "loss_mask": torch.from_numpy(loss_mask[None, ...]),
+            "metric_label": torch.from_numpy(metric_label[None, ...]),
         }
 
         return (
