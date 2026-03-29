@@ -78,6 +78,7 @@ def _extract_variable(ds: xr.Dataset, candidates: list[str], kind: str) -> xr.Da
 
 
 def build_month_dataset(month_dir: Path, config: dict[str, Any]) -> xr.Dataset:
+    print(2)
     wind_path = month_dir / "data_stream-oper_stepType-instant.nc"
     wave_path = month_dir / "data_stream-wave_stepType-instant.nc"
     if not wind_path.exists() or not wave_path.exists():
@@ -218,6 +219,7 @@ def iter_year_months(data_root: Path, year: int) -> list[Path]:
 
 
 def preprocess_year(year: int, config: dict[str, Any]) -> Path:
+    print(1)
     data_root = resolve_path(config["data"]["root_dir"])
     month_dirs = iter_year_months(data_root, year)
     if not month_dirs:

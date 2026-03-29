@@ -6,7 +6,7 @@
 - 输入：一段历史风场与波浪场序列
 - 输出：目标时刻每个网格点是否受台风影响
 - 默认标签：基于 IBTrACS `usa_r34` 风圈生成
-- 训练用标签：`typhoon_affected_soft`
+- 训练用标签：`typhoon_affected`
 - 评估用标签：`typhoon_affected`
 
 ## 项目概览
@@ -182,10 +182,9 @@ bash scripts/train_wandb.sh configs/default.yaml
 ```
 
 训练阶段会输出：
-- `outputs/train/best.ckpt`
-- `outputs/train/last.ckpt`
+- `outputs/train/checkpoints/epoch_XXXX.ckpt`
 - `outputs/train/history.csv`
-- `outputs/train/test_threshold_scan.csv`
+- `outputs/train/training_curves.png`
 - `outputs/train/summary.json`
 
 ### 5. 按年份推理
@@ -193,7 +192,7 @@ bash scripts/train_wandb.sh configs/default.yaml
 例如对 2024 年进行推理：
 
 ```bash
-python predict.py --config configs/default.yaml --checkpoint outputs/train/best.ckpt --year 2024
+python predict.py --config configs/default.yaml --checkpoint outputs/train/checkpoints/epoch_0010.ckpt --year 2024
 ```
 
 输出：

@@ -91,7 +91,7 @@ model:
 
 train:
   batch_size: 20
-  epochs: 20
+  epochs: 10
   lr: 0.0003
   weight_decay: 0.0001
   num_workers: 4
@@ -108,11 +108,11 @@ train:
   positive_sample_weight: 8.0
   negative_sample_weight: 1.0
   max_grad_norm: 1.0
-  checkpoint_interval: 5
+  checkpoint_interval: 1
   use_tqdm: true
   log_interval: 50
   eval_log_interval: 50
-  target_label_mode: soft
+  target_label_mode: hard
   device: auto
   output_dir: outputs/train
 

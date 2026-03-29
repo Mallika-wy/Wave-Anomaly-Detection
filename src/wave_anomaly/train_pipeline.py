@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.amp import GradScaler, autocast
@@ -21,7 +22,7 @@ from .config import load_config, resolve_path
 from .dataset import WaveAnomalyDataset, build_weighted_sampler
 from .inference import load_model_from_checkpoint, save_checkpoint, select_device
 from .losses import build_loss
-from .metrics import StreamingPixelMetrics, make_thresholds, object_metrics
+from .metrics import StreamingPixelMetrics
 from .model import build_model
 from .utils import ensure_dir, save_json, seed_everything
 
@@ -237,56 +238,35 @@ def log_wandb_metrics(
     )
 
 
-def scan_thresholds(
-    model: torch.nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    config: dict[str, Any],
-) -> tuple[dict[str, float], list[dict[str, float]]]:
-    thresholds = make_thresholds(
-        float(config["eval"]["threshold_start"]),
-        float(config["eval"]["threshold_end"]),
-        float(config["eval"]["threshold_step"]),
-    )
-    metric_acc = StreamingPixelMetrics(thresholds)
-    object_rows: list[dict[str, float]] = []
+def cleanup_legacy_artifacts(output_dir: Path) -> None:
+    for path in (
+        output_dir / "last.ckpt",
+        output_dir / "best.ckpt",
+        output_dir / "test_threshold_scan.csv",
+        output_dir / "test_threshold_scan.json",
+    ):
+        if path.exists():
+            path.unlink()
 
-    model.eval()
-    with torch.no_grad():
-        for x_wind, x_wave, y, meta in loader:
-            x_wind = x_wind.to(device, non_blocking=True)
-            x_wave = x_wave.to(device, non_blocking=True)
-            prob = model(x_wind, x_wave, return_logits=False).cpu().numpy()
-            y_np = meta["metric_label"].numpy()
-            mask_np = meta["loss_mask"].numpy()
-            metric_acc.update(y_np, prob, mask_np)
-    best = metric_acc.best_threshold(key="f1")
 
-    with torch.no_grad():
-        for x_wind, x_wave, y, meta in loader:
-            x_wind = x_wind.to(device, non_blocking=True)
-            x_wave = x_wave.to(device, non_blocking=True)
-            prob = model(x_wind, x_wave, return_logits=False).cpu().numpy()
-            for sample_idx in range(prob.shape[0]):
-                object_rows.append(
-                    object_metrics(
-                        y_true=meta["metric_label"][sample_idx, 0].numpy(),
-                        y_prob=prob[sample_idx, 0],
-                        threshold=float(best["threshold"]),
-                        connectivity=int(config["eval"]["connectivity"]),
-                        min_area=int(config["eval"]["min_area"]),
-                        valid_mask=meta["loss_mask"][sample_idx, 0].numpy(),
-                    )
-                )
-    if object_rows:
-        best.update(
-            {
-                "object_csi": float(np.mean([row["object_csi"] for row in object_rows])),
-                "object_pod": float(np.mean([row["object_pod"] for row in object_rows])),
-                "object_far": float(np.mean([row["object_far"] for row in object_rows])),
-            }
-        )
-    return best, metric_acc.table()
+def save_training_curves(history_rows: list[dict[str, float]], output_path: Path) -> None:
+    if not history_rows:
+        return
+    epochs = [int(row["epoch"]) for row in history_rows]
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, [float(row["train_loss"]) for row in history_rows], marker="o", label="train_loss")
+    plt.plot(epochs, [float(row["test_loss"]) for row in history_rows], marker="o", label="test_loss")
+    plt.plot(epochs, [float(row["test_f1"]) for row in history_rows], marker="o", label="test_f1")
+    plt.plot(epochs, [float(row["test_pr_auc"]) for row in history_rows], marker="o", label="test_pr_auc")
+    plt.xlabel("Epoch")
+    plt.ylabel("Value")
+    plt.title("Training Curves")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path)
+    plt.close()
 
 
 def main() -> None:
@@ -361,15 +341,16 @@ def main() -> None:
     scaler = GradScaler(device=device.type, enabled=bool(config["train"].get("amp", True)) and device.type == "cuda")
 
     history_path = output_dir / "history.csv"
-    best_path = output_dir / "best.ckpt"
-    last_path = output_dir / "last.ckpt"
     checkpoint_dir = ensure_dir(output_dir / "checkpoints")
     checkpoint_interval = max(1, int(config["train"].get("checkpoint_interval", 5)))
+    curves_path = output_dir / "training_curves.png"
+    cleanup_legacy_artifacts(output_dir)
 
     best_pr_auc = -float("inf")
     best_epoch = 0
-    threshold_csv_path = output_dir / "test_threshold_scan.csv"
+    best_test_summary: dict[str, Any] | None = None
     wandb_run = init_wandb_run(config, output_dir, model)
+    history_rows: list[dict[str, float]] = []
 
     try:
         with history_path.open("w", encoding="utf-8", newline="") as fp:
@@ -409,26 +390,25 @@ def main() -> None:
                 )
                 scheduler.step()
 
-                writer.writerow(
-                    {
-                        "epoch": epoch,
-                        "train_loss": f"{train_loss:.6f}",
-                        "test_loss": f"{test_summary['loss']:.6f}",
-                        "test_pr_auc": f"{test_summary['pr_auc']:.6f}",
-                        "test_f1": f"{test_summary['f1']:.6f}",
-                        "test_threshold": f"{test_summary['threshold']:.6f}",
-                    }
-                )
+                history_row = {
+                    "epoch": epoch,
+                    "train_loss": float(f"{train_loss:.6f}"),
+                    "test_loss": float(f"{test_summary['loss']:.6f}"),
+                    "test_pr_auc": float(f"{test_summary['pr_auc']:.6f}"),
+                    "test_f1": float(f"{test_summary['f1']:.6f}"),
+                    "test_threshold": float(f"{test_summary['threshold']:.6f}"),
+                }
+                history_rows.append(history_row)
+                writer.writerow(history_row)
                 fp.flush()
 
-                save_checkpoint(last_path, model, optimizer, scheduler, epoch, test_summary, config)
                 if epoch % checkpoint_interval == 0:
                     epoch_checkpoint_path = checkpoint_dir / f"epoch_{epoch:04d}.ckpt"
                     save_checkpoint(epoch_checkpoint_path, model, optimizer, scheduler, epoch, test_summary, config)
                 if test_summary["pr_auc"] > best_pr_auc:
                     best_pr_auc = float(test_summary["pr_auc"])
                     best_epoch = epoch
-                    save_checkpoint(best_path, model, optimizer, scheduler, epoch, test_summary, config)
+                    best_test_summary = dict(test_summary)
 
                 log_wandb_metrics(
                     run=wandb_run,
@@ -444,32 +424,16 @@ def main() -> None:
                     f"test_pr_auc={test_summary['pr_auc']:.4f} test_f1={test_summary['f1']:.4f}"
                 )
 
-        model, checkpoint = load_model_from_checkpoint(best_path, config, device)
-        best_threshold, threshold_table = scan_thresholds(model, test_loader, device, config)
-        save_json(output_dir / "test_threshold_scan.json", {"best": best_threshold, "table": threshold_table})
-        with threshold_csv_path.open("w", encoding="utf-8", newline="") as fp:
-            fieldnames = ["threshold", "precision", "recall", "f1", "iou", "dice", "csi", "pod", "far", "accuracy"]
-            writer = csv.DictWriter(
-                fp,
-                fieldnames=fieldnames,
-            )
-            writer.writeheader()
-            writer.writerows({key: row.get(key, "") for key in fieldnames} for row in threshold_table)
-        save_checkpoint(
-            best_path,
-            model,
-            optimizer,
-            scheduler,
-            int(checkpoint["epoch"]),
-            checkpoint["metrics"],
-            config,
-            threshold=float(best_threshold["threshold"]),
-        )
+        save_training_curves(history_rows, curves_path)
+        best_checkpoint_path = checkpoint_dir / f"epoch_{best_epoch:04d}.ckpt"
+        model, checkpoint = load_model_from_checkpoint(best_checkpoint_path, config, device)
 
         summary: dict[str, Any] = {
             "best_epoch": best_epoch,
             "best_test_pr_auc": best_pr_auc,
-            "best_threshold": best_threshold,
+            "best_epoch_checkpoint": str(best_checkpoint_path),
+            "best_test_summary": best_test_summary or {},
+            "training_curves_path": str(curves_path),
         }
         if val_loader is not None:
             print("[val] starting final evaluation", flush=True)
@@ -488,7 +452,8 @@ def main() -> None:
         if wandb_run is not None:
             wandb_run.summary["best_epoch"] = int(best_epoch)
             wandb_run.summary["best_test_pr_auc"] = float(best_pr_auc)
-            wandb_run.summary["best_threshold"] = float(best_threshold["threshold"])
+            if best_test_summary is not None:
+                wandb_run.summary["best_threshold"] = float(best_test_summary["threshold"])
             if "val_summary" in summary:
                 for key, value in summary["val_summary"].items():
                     if isinstance(value, (int, float, np.floating)):
