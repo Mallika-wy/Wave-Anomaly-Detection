@@ -121,7 +121,7 @@ label:
   soft_min_value: 0.01
 
 predict:
-  batch_size: 8
+  batch_size: 20
   num_workers: 2
   persistent_workers: true
   prefetch_factor: 2
@@ -132,7 +132,7 @@ eval:
   threshold_start: 0.1
   threshold_end: 0.9
   threshold_step: 0.05
-  pr_auc_thresholds: 51
+  pr_auc_thresholds: 20
   use_tqdm: true
   min_area: 4
   connectivity: 8
